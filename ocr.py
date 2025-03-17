@@ -16,9 +16,9 @@ st.set_page_config(page_title="OCR + GPT Data Extractor", layout="wide")
 temp_dir = tempfile.mkdtemp()
 
 # Hardcoded Airtable credentials
-AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY") or st.secrets.get("AIRTABLE_API_KEY")
-AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID") or st.secrets.get("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME") or st.secrets.get("AIRTABLE_TABLE_NAME")
+AIRTABLE_API_KEY = "patnYEjjaOa6wLijy.2b24acbfb63058d86bacf5d832778a838988d2030971096a6ed251d15066e33c"
+AIRTABLE_BASE_ID = "appSYBM6d3WM2c9ht"
+AIRTABLE_TABLE_NAME = "Business Card Data"
 
 # Headers for Airtable API
 HEADERS_AIRTABLE = {
@@ -156,7 +156,13 @@ def add_to_airtable(structured_data_list):
                 results.append({"status": "error", "message": data["error"]})
                 continue
             
-            email = data.get("Primary Email", "").lower()
+            email = data.get("Primary Email", "")
+            if email:
+                email = email.lower()
+            else:
+                results.append({"status": "failed", "message": f"failed to add record for {email}"})
+                continue    
+                
             airtable_data = {
                 "Name": data.get("Name"),
                 "Company": data.get("Company"),
@@ -200,7 +206,6 @@ def add_to_airtable(structured_data_list):
             st.error(f"Failed to update batch: {response.text}")
     
     return results
-
 def main():
     st.title("OCR + GPT Data Extraction Tool")
     st.markdown("Upload images to extract text, structure the data using GPT, and add to Airtable.")
@@ -215,12 +220,23 @@ def main():
             else:
                 st.error("❌ Invalid API key or API request failed.")
     
-    uploaded_files = st.file_uploader("Upload Images", type=["jpg", "jpeg", "png", "bmp"], 
-                                    accept_multiple_files=True)
+    # Initialize file uploader key in session state if not present
+    if 'uploader_key' not in st.session_state:
+        st.session_state.uploader_key = 0
+    
+    uploaded_files = st.file_uploader(
+        "Upload Images",
+        type=["jpg", "jpeg", "png", "bmp"],
+        accept_multiple_files=True,
+        key=f"uploader_{st.session_state.uploader_key}"
+    )
     
     if uploaded_files:
         for file in os.listdir(temp_dir):
-            os.remove(os.path.join(temp_dir, file))
+            try:
+                os.remove(os.path.join(temp_dir, file))
+            except OSError:
+                pass
         
         image_paths = []
         for file in uploaded_files:
@@ -229,15 +245,24 @@ def main():
                 f.write(file.getbuffer())
             image_paths.append(file_path)
         
-        st.subheader("Image Previews")
-        cols = st.columns(min(4, len(uploaded_files)))
-        for i, file_path in enumerate(image_paths):
-            with cols[i % len(cols)]:
-                img = Image.open(file_path)
-                st.image(img, caption=f"Image {i+1}", width=150)
-        
         processing_container = st.container()
         results_container = st.container()
+        
+        if processing_container.button("Clear All", key="clear_button"):
+            # Clear temporary directory
+            for file in os.listdir(temp_dir):
+                try:
+                    os.remove(os.path.join(temp_dir, file))
+                except OSError:
+                    pass
+            # Clear session state
+            keys_to_clear = ['extracted_texts', 'structured_data', 'show_json', 'image_paths']
+            for key in keys_to_clear:
+                if key in st.session_state:
+                    del st.session_state[key]
+            # Increment uploader key to reset file uploader widget
+            st.session_state.uploader_key += 1
+            st.rerun()
         
         if processing_container.button("Process Images"):
             if not openai_api_key:
@@ -287,6 +312,6 @@ def main():
                         results_container.info(f"⏭️ Skipped image {i+1}: {result['message']}")
                     else:
                         results_container.error(f"❌ Failed for image {i+1}: {result['message']}")
-
+                        
 if __name__ == "__main__":
     main()
