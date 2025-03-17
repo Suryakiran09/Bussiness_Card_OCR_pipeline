@@ -1,6 +1,5 @@
 import streamlit as st
 import json
-import easyocr
 import os
 import tempfile
 from PIL import Image
@@ -45,73 +44,76 @@ def test_openai_key(api_key):
         st.error(f"Error testing OpenAI API key: {str(e)}")
         return False
 
-def extract_text_from_images(image_paths):
-    "Extracts text from multiple images using EasyOCR."
-    with st.spinner("Initializing OCR engine..."):
-        reader = easyocr.Reader(['en'])
-    
-    extracted_texts = []
-    for i, image_path in enumerate(image_paths):
-        with st.spinner(f"Extracting text from image {i+1}/{len(image_paths)}..."):
-            try:
-                result = reader.readtext(image_path, detail=0, paragraph=True)
-                extracted_texts.append("\n".join(result))
-            except Exception as e:
-                st.error(f"Error processing image {i+1}: {str(e)}")
-                extracted_texts.append("")
-    return extracted_texts
+def encode_image_to_base64(image_path):
+    """Convert an image to base64 encoding."""
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode("utf-8")
 
-def structure_data_with_gpt(extracted_texts, api_key):
-    "Uses GPT to convert extracted texts into structured JSON formats."
+def extract_and_structure_data_with_vision(image_paths, api_key):
+    """Uses OpenAI Vision API to extract and structure data from images directly."""
     client = OpenAI(api_key=api_key)
     structured_data_list = []
     
-    for i, text in enumerate(extracted_texts):
-        if not text.strip():
-            structured_data_list.append({"error": "No text extracted from this image"})
-            continue
-            
-        with st.spinner(f"Structuring data for image {i+1}/{len(extracted_texts)}..."):
-            prompt = (
-                "I want you to extract structured information from the OCR text of a document (likely a business card, form, or receipt).\n"
-                "Here's the extracted text:\n"
-                "```\n"
-                f"{text}\n"
-                "```\n"
-                "Instructions:\n"
-                "1. Identify what type of document this is (business card, invoice, receipt, etc.)\n"
-                "2. Extract all relevant fields and values based on the document type\n"
-                "3. Organize them into a structured dictionary format\n"
-                "4. Use appropriate keys that describe the data (name, email, phone, address, company, job_title, etc.)\n"
-                "5. For unclear or missing information, use null values\n"
-                "6. Format phone numbers, addresses, and dates consistently\n"
-                "7. Return ONLY the JSON data as a properly formatted Python dictionary object\n"
-                "For business cards, I need the following fields (use null if not available):\n"
-                "- Name\n"
-                "- Company\n"
-                "- Primary Email\n"
-                "- Secondary Email\n"
-                "- Primary Number\n"
-                "- Secondary Number\n"
-                "Return only valid, parseable JSON with proper quotes and escaped characters."
-            )
+    for i, image_path in enumerate(image_paths):
+        with st.spinner(f"Processing image {i+1}/{len(image_paths)}..."):
             try:
+                # Encode image to base64
+                b64_image = encode_image_to_base64(image_path)
+                
+                # Create the prompt for Vision API
+                prompt = (
+                    "Extract all text from this image (likely a business card, form, or receipt) and structure it into JSON format.\n"
+                    "Instructions:\n"
+                    "1. Identify what type of document this is (business card, invoice, receipt, etc.)\n"
+                    "2. Extract all relevant fields and values based on the document type\n"
+                    "3. Organize them into a structured dictionary format\n"
+                    "4. Use appropriate keys that describe the data (name, email, phone, address, company, job_title, etc.)\n"
+                    "5. For unclear or missing information, use null values\n"
+                    "6. Format phone numbers, addresses, and dates consistently\n"
+                    "7. Return ONLY the JSON data as a properly formatted Python dictionary object\n"
+                    "For business cards, I need the following fields (use null if not available):\n"
+                    "- Name\n"
+                    "- Company\n"
+                    "- Primary Email\n"
+                    "- Secondary Email\n"
+                    "- Primary Number\n"
+                    "- Secondary Number\n"
+                    "Return only valid, parseable JSON with proper quotes and escaped characters."
+                )
+                
+                # Call the Vision API with the correct format
                 response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-4o",
                     messages=[
-                        {"role": "system", "content": "You are an expert in extracting structured data from unstructured text. You will return only valid JSON."},
-                        {"role": "user", "content": prompt}
+                        {
+                            "role": "system", 
+                            "content": "You are an expert in extracting structured data from images. You will return only valid JSON."
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url", 
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{b64_image}"
+                                    }
+                                }
+                            ]
+                        }
                     ],
                     temperature=0.3
                 )
+                
                 structured_text = response.choices[0].message.content.strip()
                 structured_text = structured_text.replace("```json", "").replace("```", "")
                 structured_data = json.loads(structured_text)
                 structured_data_list.append(structured_data)
+                
             except Exception as e:
                 structured_data_list.append({
-                    "error": f"Error processing with GPT: {str(e)}",
-                    "extracted_text": text
+                    "error": f"Error processing with Vision API: {str(e)}",
+                    "image_path": image_path
                 })
     
     return structured_data_list
@@ -206,9 +208,10 @@ def add_to_airtable(structured_data_list):
             st.error(f"Failed to update batch: {response.text}")
     
     return results
+
 def main():
-    st.title("OCR + GPT Data Extraction Tool")
-    st.markdown("Upload images to extract text, structure the data using GPT, and add to Airtable.")
+    st.title("Vision API + GPT Data Extraction Tool")
+    st.markdown("Upload images to extract and structure data using OpenAI's Vision API, and add to Airtable.")
     
     with st.sidebar:
         st.header("OpenAI API Configuration")
@@ -256,7 +259,7 @@ def main():
                 except OSError:
                     pass
             # Clear session state
-            keys_to_clear = ['extracted_texts', 'structured_data', 'show_json', 'image_paths']
+            keys_to_clear = ['structured_data', 'show_json', 'image_paths']
             for key in keys_to_clear:
                 if key in st.session_state:
                     del st.session_state[key]
@@ -269,17 +272,9 @@ def main():
                 processing_container.error("Please enter an OpenAI API key.")
             else:
                 try:
-                    extracted_texts = extract_text_from_images(image_paths)
-                    st.session_state.extracted_texts = extracted_texts
-                    
-                    with processing_container.expander("Show extracted OCR text", expanded=False):
-                        for i, text in enumerate(extracted_texts):
-                            st.subheader(f"Image {i+1}")
-                            st.text_area(f"OCR Text {i+1}", text, height=150, key=f"text_{i}")
-                    
-                    structured_data = structure_data_with_gpt(extracted_texts, openai_api_key)
+                    # Process images directly with Vision API
+                    structured_data = extract_and_structure_data_with_vision(image_paths, openai_api_key)
                     st.session_state.structured_data = structured_data
-                    
                     st.session_state.show_json = True
                     
                 except Exception as e:
